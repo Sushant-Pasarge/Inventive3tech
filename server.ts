@@ -2,50 +2,50 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
-import nodemailer from "nodemailer";
+import { Resend } from "resend";
 
 dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// Parse JSON request bodies
+// Middleware
 app.use(express.json());
-
-// Parse form-encoded request bodies if needed
 app.use(express.urlencoded({ extended: true }));
 
-// Temporary in-memory enquiry storage.
-// Note: this resets whenever the server restarts.
+// --------------------------------------------------
+// RESEND CONFIGURATION
+// --------------------------------------------------
+
+if (!process.env.RESEND_API_KEY) {
+  console.warn(
+    "WARNING: RESEND_API_KEY is not configured. Email sending will not work."
+  );
+}
+
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+// Enquiries will be delivered here
+const ENQUIRY_RECIPIENT = "inventive3tech@gmail.com";
+
+// Temporary in-memory enquiry storage
 const enquiriesStore: any[] = [];
 
-// -----------------------------------------------------
-// EMAIL CONFIGURATION
-// -----------------------------------------------------
-
-const transporter = nodemailer.createTransport({
-  service: "gmail",
-
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
-});
-
-// -----------------------------------------------------
+// --------------------------------------------------
 // HEALTH CHECK
-// -----------------------------------------------------
+// --------------------------------------------------
 
 app.get("/api/health", (req, res) => {
-  res.json({
+  res.status(200).json({
     status: "ok",
+    emailProvider: "Resend",
     timestamp: new Date().toISOString(),
   });
 });
 
-// -----------------------------------------------------
+// --------------------------------------------------
 // POST ENQUIRY
-// -----------------------------------------------------
+// --------------------------------------------------
 
 app.post("/api/enquiry", async (req, res) => {
   try {
@@ -59,10 +59,7 @@ app.post("/api/enquiry", async (req, res) => {
       message,
     } = req.body;
 
-    // -------------------------------------------------
-    // VALIDATION
-    // -------------------------------------------------
-
+    // Required fields
     if (
       !fullName ||
       !email ||
@@ -73,239 +70,298 @@ app.post("/api/enquiry", async (req, res) => {
       return res.status(400).json({
         success: false,
         error:
-          "Missing required fields. Please fill out Full Name, Email, Service Required, Subject, and Message.",
+          "Please fill out Full Name, Email, Service Required, Subject and Message.",
       });
     }
 
-    // Email validation
+    // Validate email
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
     if (!emailRegex.test(email)) {
       return res.status(400).json({
         success: false,
-        error: "Invalid email address format.",
+        error: "Invalid email address.",
       });
     }
 
-    // -------------------------------------------------
+    // Check API key
+    if (!process.env.RESEND_API_KEY) {
+      console.error("RESEND_API_KEY is missing.");
+
+      return res.status(500).json({
+        success: false,
+        error: "Email service is not configured.",
+      });
+    }
+
+    // --------------------------------------------------
     // CREATE ENQUIRY
-    // -------------------------------------------------
+    // --------------------------------------------------
 
     const newEnquiry = {
       id: "ENQ-" + Math.floor(100000 + Math.random() * 900000),
 
-      fullName: fullName.trim(),
+      fullName: String(fullName).trim(),
 
-      companyName: companyName?.trim() || "Individual",
+      companyName: companyName
+        ? String(companyName).trim()
+        : "Individual",
 
-      email: email.trim(),
+      email: String(email).trim(),
 
-      phone: phone?.trim() || "Not Provided",
+      phone: phone
+        ? String(phone).trim()
+        : "Not Provided",
 
-      serviceRequired,
+      serviceRequired: String(serviceRequired).trim(),
 
-      subject: subject.trim(),
+      subject: String(subject).trim(),
 
-      message: message.trim(),
+      message: String(message).trim(),
 
       submittedAt: new Date().toISOString(),
     };
 
-    // -------------------------------------------------
-    // SEND EMAIL
-    // -------------------------------------------------
+    console.log("");
+    console.log("=====================================");
+    console.log("PROCESSING NEW ENQUIRY");
+    console.log("=====================================");
+    console.log(`Enquiry ID: ${newEnquiry.id}`);
+    console.log(`Customer: ${newEnquiry.fullName}`);
+    console.log(`Customer Email: ${newEnquiry.email}`);
+    console.log(`Sending To: ${ENQUIRY_RECIPIENT}`);
+    console.log("=====================================");
 
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-      console.error(
-        "EMAIL_USER or EMAIL_PASS is missing from environment variables."
-      );
+    // --------------------------------------------------
+    // SEND EMAIL THROUGH RESEND
+    // --------------------------------------------------
 
-      return res.status(500).json({
-        success: false,
-        error: "Email service is not configured correctly.",
-      });
-    }
+    const { data, error } = await resend.emails.send({
+      // Resend test sender
+      from: "Inventive3 Tech <onboarding@resend.dev>",
 
-    const mailOptions = {
-      from: `"Inventive3 Tech Website" <${process.env.EMAIL_USER}>`,
+      // Destination
+      to: [ENQUIRY_RECIPIENT],
 
-      // Your company/admin Gmail
-      to: process.env.EMAIL_USER,
-
-      // Clicking Reply will reply to the customer
+      // Reply directly to the customer
       replyTo: newEnquiry.email,
 
       subject: `New Website Enquiry - ${newEnquiry.subject}`,
 
-      text: `
-NEW CUSTOMER ENQUIRY
-----------------------------------------
-
-Enquiry ID:
-${newEnquiry.id}
-
-Customer Name:
-${newEnquiry.fullName}
-
-Company:
-${newEnquiry.companyName}
-
-Customer Email:
-${newEnquiry.email}
-
-Phone:
-${newEnquiry.phone}
-
-Service Required:
-${newEnquiry.serviceRequired}
-
-Subject:
-${newEnquiry.subject}
-
-Message:
-${newEnquiry.message}
-
-----------------------------------------
-
-Submitted At:
-${newEnquiry.submittedAt}
-
-This enquiry was submitted through the Inventive3 Tech website.
-      `,
-
       html: `
-        <div
-          style="
-            font-family: Arial, sans-serif;
-            max-width: 650px;
-            margin: auto;
-            border: 1px solid #ddd;
-            border-radius: 10px;
-            overflow: hidden;
-          "
-        >
-
-          <div
+        <!DOCTYPE html>
+        <html>
+          <body
             style="
-              background: #0f172a;
-              color: white;
-              padding: 25px;
+              margin: 0;
+              padding: 20px;
+              background-color: #f4f4f5;
+              font-family: Arial, Helvetica, sans-serif;
             "
           >
-            <h1 style="margin:0;">
-              New Customer Enquiry
-            </h1>
 
-            <p style="margin-bottom:0;">
-              Inventive3 Tech Website
-            </p>
-          </div>
-
-          <div style="padding:25px;">
-
-            <h3>Enquiry ID</h3>
-
-            <p>
-              ${newEnquiry.id}
-            </p>
-
-            <hr />
-
-            <h3>Customer Details</h3>
-
-            <p>
-              <strong>Name:</strong>
-              ${newEnquiry.fullName}
-            </p>
-
-            <p>
-              <strong>Company:</strong>
-              ${newEnquiry.companyName}
-            </p>
-
-            <p>
-              <strong>Email:</strong>
-              ${newEnquiry.email}
-            </p>
-
-            <p>
-              <strong>Phone:</strong>
-              ${newEnquiry.phone}
-            </p>
-
-            <hr />
-
-            <h3>Enquiry Details</h3>
-
-            <p>
-              <strong>Service Required:</strong>
-              ${newEnquiry.serviceRequired}
-            </p>
-
-            <p>
-              <strong>Subject:</strong>
-              ${newEnquiry.subject}
-            </p>
-
-            <p>
-              <strong>Message:</strong>
-            </p>
-
-            <p>
-              ${newEnquiry.message}
-            </p>
-
-            <hr />
-
-            <p
+            <div
               style="
-                color:#666;
-                font-size:12px;
+                max-width: 650px;
+                margin: 0 auto;
+                background: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+                overflow: hidden;
               "
             >
-              Submitted:
-              ${newEnquiry.submittedAt}
-            </p>
 
-          </div>
+              <div
+                style="
+                  background: #0f172a;
+                  color: #ffffff;
+                  padding: 25px;
+                "
+              >
+                <h1
+                  style="
+                    margin: 0;
+                    font-size: 24px;
+                  "
+                >
+                  New Customer Enquiry
+                </h1>
 
-        </div>
+                <p
+                  style="
+                    margin: 8px 0 0 0;
+                    color: #cbd5e1;
+                  "
+                >
+                  Inventive3 Tech Website
+                </p>
+              </div>
+
+              <div style="padding: 25px;">
+
+                <p
+                  style="
+                    font-size: 14px;
+                    color: #64748b;
+                  "
+                >
+                  Enquiry ID
+                </p>
+
+                <h2
+                  style="
+                    margin-top: 0;
+                    color: #0f172a;
+                  "
+                >
+                  ${newEnquiry.id}
+                </h2>
+
+                <hr
+                  style="
+                    border: 0;
+                    border-top: 1px solid #e5e7eb;
+                    margin: 25px 0;
+                  "
+                />
+
+                <h3 style="color: #0f172a;">
+                  Customer Details
+                </h3>
+
+                <p>
+                  <strong>Name:</strong>
+                  ${newEnquiry.fullName}
+                </p>
+
+                <p>
+                  <strong>Company:</strong>
+                  ${newEnquiry.companyName}
+                </p>
+
+                <p>
+                  <strong>Email:</strong>
+                  ${newEnquiry.email}
+                </p>
+
+                <p>
+                  <strong>Phone:</strong>
+                  ${newEnquiry.phone}
+                </p>
+
+                <hr
+                  style="
+                    border: 0;
+                    border-top: 1px solid #e5e7eb;
+                    margin: 25px 0;
+                  "
+                />
+
+                <h3 style="color: #0f172a;">
+                  Enquiry Details
+                </h3>
+
+                <p>
+                  <strong>Service Required:</strong>
+                  ${newEnquiry.serviceRequired}
+                </p>
+
+                <p>
+                  <strong>Subject:</strong>
+                  ${newEnquiry.subject}
+                </p>
+
+                <p>
+                  <strong>Message:</strong>
+                </p>
+
+                <div
+                  style="
+                    background: #f8fafc;
+                    padding: 15px;
+                    border-radius: 8px;
+                    line-height: 1.6;
+                  "
+                >
+                  ${newEnquiry.message}
+                </div>
+
+                <hr
+                  style="
+                    border: 0;
+                    border-top: 1px solid #e5e7eb;
+                    margin: 25px 0;
+                  "
+                />
+
+                <p
+                  style="
+                    font-size: 12px;
+                    color: #64748b;
+                  "
+                >
+                  Submitted at:
+                  ${newEnquiry.submittedAt}
+                </p>
+
+              </div>
+
+              <div
+                style="
+                  background: #f8fafc;
+                  padding: 18px 25px;
+                  font-size: 12px;
+                  color: #64748b;
+                "
+              >
+                This enquiry was submitted through the
+                Inventive3 Tech website.
+              </div>
+
+            </div>
+
+          </body>
+        </html>
       `,
-    };
+    });
 
-    // Actually send email
-    const emailInfo = await transporter.sendMail(mailOptions);
+    // --------------------------------------------------
+    // RESEND ERROR
+    // --------------------------------------------------
 
-    // Store only after email succeeds
+    if (error) {
+      console.error("");
+      console.error("=====================================");
+      console.error("RESEND EMAIL ERROR");
+      console.error("=====================================");
+      console.error(error);
+      console.error("=====================================");
+      console.error("");
+
+      return res.status(500).json({
+        success: false,
+        error: "Unable to send enquiry email.",
+      });
+    }
+
+    // --------------------------------------------------
+    // SUCCESS
+    // --------------------------------------------------
+
     enquiriesStore.push(newEnquiry);
 
-    // -------------------------------------------------
-    // SERVER LOG
-    // -------------------------------------------------
-
     console.log("");
-    console.log("======================================");
-    console.log("INVENTIVE3 TECH - NEW ENQUIRY");
-    console.log("======================================");
-
+    console.log("=====================================");
+    console.log("EMAIL SENT SUCCESSFULLY");
+    console.log("=====================================");
     console.log(`Enquiry ID: ${newEnquiry.id}`);
-    console.log(`Name: ${newEnquiry.fullName}`);
-    console.log(`Email: ${newEnquiry.email}`);
-    console.log(`Phone: ${newEnquiry.phone}`);
+    console.log(`Customer: ${newEnquiry.fullName}`);
+    console.log(`Customer Email: ${newEnquiry.email}`);
     console.log(`Service: ${newEnquiry.serviceRequired}`);
-    console.log(`Subject: ${newEnquiry.subject}`);
-
-    console.log("--------------------------------------");
-
-    console.log("Email sent successfully.");
-    console.log(`Message ID: ${emailInfo.messageId}`);
-
-    console.log("======================================");
+    console.log(`Recipient: ${ENQUIRY_RECIPIENT}`);
+    console.log(`Resend Email ID: ${data?.id}`);
+    console.log("=====================================");
     console.log("");
-
-    // -------------------------------------------------
-    // SUCCESS RESPONSE
-    // -------------------------------------------------
 
     return res.status(200).json({
       success: true,
@@ -316,84 +372,98 @@ This enquiry was submitted through the Inventive3 Tech website.
       enquiryId: newEnquiry.id,
 
       data: {
-        recipient: process.env.EMAIL_USER,
+        recipient: ENQUIRY_RECIPIENT,
         estimatedResponseTime: "24 business hours",
       },
     });
+
   } catch (error: any) {
+
     console.error("");
-    console.error("======================================");
+    console.error("=====================================");
     console.error("ENQUIRY PROCESSING ERROR");
-    console.error("======================================");
-
+    console.error("=====================================");
     console.error(error);
-
-    console.error("======================================");
+    console.error("=====================================");
     console.error("");
 
     return res.status(500).json({
       success: false,
-
       error:
-        "Unable to submit your enquiry at the moment. Please try again later.",
+        "Unable to submit your enquiry. Please try again later.",
     });
   }
 });
 
-// -----------------------------------------------------
+// --------------------------------------------------
 // VIEW ENQUIRIES
-// -----------------------------------------------------
+// --------------------------------------------------
 
 app.get("/api/enquiries", (req, res) => {
-  res.json({
+  res.status(200).json({
     success: true,
     count: enquiriesStore.length,
     enquiries: enquiriesStore,
   });
 });
 
-// -----------------------------------------------------
-// VITE
-// -----------------------------------------------------
+// --------------------------------------------------
+// VITE / PRODUCTION SERVER
+// --------------------------------------------------
 
 async function setupVite() {
+
   if (process.env.NODE_ENV !== "production") {
-    console.log("Setting up Vite server in development mode...");
+
+    console.log("Setting up Vite development server...");
 
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
       },
-
       appType: "spa",
     });
 
     app.use(vite.middlewares);
+
   } else {
+
     console.log("Serving production static assets...");
 
-    const distPath = path.join(process.cwd(), "dist");
+    const distPath = path.join(
+      process.cwd(),
+      "dist"
+    );
 
     app.use(express.static(distPath));
 
-    // SPA fallback
     app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      res.sendFile(
+        path.join(
+          distPath,
+          "index.html"
+        )
+      );
     });
   }
 
   app.listen(PORT, "0.0.0.0", () => {
+
     console.log("");
-    console.log("======================================");
+    console.log("=====================================");
     console.log("Inventive3 Tech Server Started");
-    console.log("======================================");
-
-    console.log(`Server: http://localhost:${PORT}`);
-    console.log(`API: http://localhost:${PORT}/api/health`);
-
-    console.log("======================================");
+    console.log("=====================================");
+    console.log(`Port: ${PORT}`);
+    console.log("Email Provider: Resend");
+    console.log(`Enquiry Recipient: ${ENQUIRY_RECIPIENT}`);
+    console.log("=====================================");
     console.log("");
+
   });
 }
 
-setupVite();
+setupVite().catch((error) => {
+  console.error("Failed to start server:");
+  console.error(error);
+  process.exit(1);
+});
