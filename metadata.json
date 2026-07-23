@@ -1,0 +1,6 @@
+{
+  "name": "Inventive3 Tech",
+  "description": "Precision metrology, 3D scanning, reverse engineering, and dimensional inspection solutions for modern manufacturing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
